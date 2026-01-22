@@ -1,89 +1,65 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 
-st.set_page_config(page_title="Kalite & Performans Analiz Dashboard", layout="wide")
+uploaded_files = st.sidebar.file_uploader(
+    "Excel dosyalarını yükleyin (3 dosya birden seçin)",
+    type=["xlsx"],
+    accept_multiple_files=True
+)
 
-# CSS ile Excel benzeri bir stil veriyoruz
-st.markdown("""
-    <style>
-    .main { background-color: #f5f7f9; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    </style>
-    """, unsafe_allow_html=True)
-
-st.title("📊 Çağrı Merkezi Kalite ve Kırılım Raporu")
-
-# --- DOSYA YÜKLEME ---
-uploaded_file = st.sidebar.file_uploader("Ham Veri (Excel) Dosyasını Yükleyin", type=['xlsx'])
-
-if uploaded_file:
-    # Tüm sayfaları oku
-    try:
-        df_data = pd.read_excel(uploaded_file, sheet_name='DATA')
-        df_mma = pd.read_excel(uploaded_file, sheet_name='Data', engine='openpyxl') # MMA dosyası için
-    except:
-        st.error("Lütfen sayfa isimlerinin 'DATA' ve 'Data' (MMA için) olduğundan emin olun.")
+if uploaded_files:
+    if len(uploaded_files) != 3:
+        st.warning(f"Şu an {len(uploaded_files)} dosya seçtiniz. Lütfen tam 3 dosya yükleyin.")
         st.stop()
 
-    # --- FİLTRELEME ---
-    st.sidebar.header("🔍 Filtre Paneli")
-    lokasyonlar = df_data['Grup Adı'].unique()
-    selected_loc = st.sidebar.multiselect("Lokasyon Seçin", lokasyonlar, default=lokasyonlar)
-    
-    takimlar = df_data[df_data['Grup Adı'].isin(selected_loc)]['Takım Adı'].unique()
-    selected_tl = st.sidebar.multiselect("Takım Lideri", takimlar, default=takimlar)
+    # Dosyaları isimlerine göre eşleştirme (anahtar kelimeler)
+    def pick_file(files, keywords):
+        for f in files:
+            name = f.name.lower()
+            if any(k in name for k in keywords):
+                return f
+        return None
 
-    # Filtrelenmiş Data
-    f_df = df_data[(df_data['Grup Adı'].isin(selected_loc)) & (df_data['Takım Adı'].isin(selected_tl))]
+    file_data = pick_file(uploaded_files, ["data", "ham", "kalite"])     # DATA sayfası olan dosya
+    file_mma  = pick_file(uploaded_files, ["mma", "anket", "memnun"])    # MMA dosyası
+    file_3    = pick_file(uploaded_files, ["hedef", "target", "extra", "3"])  # 3. dosya (senin kullanımına göre)
 
-    # --- ÜST KPI PANELİ ---
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Genel Puan Ortalaması", f"{f_df['Form Puan'].mean():.2f}")
-    c2.metric("Toplam Dinleme", f"{len(f_df)}")
-    c3.metric("Kritik Hata (0 Puan)", f"{len(f_df[f_df['Form Puan'] == 0])}")
-    c4.metric("Hata Oranı", f"%{(len(f_df[f_df['Form Puan'] < 100]) / len(f_df)) * 100:.1f}")
+    # Bulunamayanları sırayla doldur (fallback)
+    remaining = [f for f in uploaded_files if f not in [file_data, file_mma, file_3]]
+    if file_data is None:
+        file_data = remaining.pop(0) if remaining else uploaded_files[0]
+    if file_mma is None:
+        remaining = [f for f in uploaded_files if f not in [file_data, file_mma, file_3]]
+        file_mma = remaining.pop(0) if remaining else uploaded_files[1]
+    if file_3 is None:
+        remaining = [f for f in uploaded_files if f not in [file_data, file_mma]]
+        file_3 = remaining[0] if remaining else uploaded_files[2]
 
-    # --- SEKMELER (EXCEL SAYFALARI GİBİ) ---
-    tab1, tab2, tab3, tab4 = st.tabs(["Kümüle Performans", "Hata Kırılımları", "Sıfırlama Detay", "MMA Analiz"])
+    # Okuma
+    try:
+        df_data = pd.read_excel(file_data, sheet_name="DATA")
+    except Exception:
+        st.error(f"'{file_data.name}' içinde 'DATA' sayfası bulunamadı.")
+        st.stop()
 
-    with tab1:
-        st.subheader("MT Kalite Performans Listesi")
-        # Örnek dosyadaki Kümüle Pivot görünümü
-        pivot_mt = f_df.groupby(['Personel', 'Takım Adı', 'Grup Adı']).agg({
-            'Form Puan': 'mean',
-            'SantralNo': 'count'
-        }).reset_index().rename(columns={'Form Puan': 'Ort. Puan', 'SantralNo': 'Dinleme Sayısı'})
-        
-        # Renklendirme (75 altı kırmızı)
-        def color_score(val):
-            color = 'red' if val < 75 else 'green' if val > 90 else 'black'
-            return f'color: {color}'
-        
-        st.dataframe(pivot_mt.style.applymap(color_score, subset=['Ort. Puan']), use_container_width=True)
+    try:
+        df_mma = pd.read_excel(file_mma, sheet_name="Data")
+    except Exception:
+        st.error(f"'{file_mma.name}' içinde 'Data' (MMA) sayfası bulunamadı.")
+        st.stop()
 
-    with tab2:
-        st.subheader("Hata Konusu Dağılımı (Top 10)")
-        # Hata sütunlarını analiz et (Sütunlarda 1 olanları sayar)
-        hata_listesi = ['Doğru Bilgilendirme', 'Sistem Kullanımı', 'Süreç Yönetimi', 'Üslup Sorunu', 'Can ve Mal Güvenliği']
-        # Mevcut olan hata sütunlarını bul
-        exist_errors = [c for c in hata_listesi if c in f_df.columns]
-        hata_counts = f_df[exist_errors].apply(lambda x: (x < 100).sum()).sort_values(ascending=False)
-        
-        fig_hata = px.bar(hata_counts, orientation='h', labels={'value':'Hata Sayısı', 'index':'Kriter'}, color_discrete_sequence=['#EF553B'])
-        st.plotly_chart(fig_hata, use_container_width=True)
+    # 3. dosya nasıl bir dosya ise ona göre sheet_name ver (şimdilik ilk sayfa)
+    try:
+        df_3 = pd.read_excel(file_3)  # gerekiyorsa sheet_name="..."
+    except Exception:
+        st.error(f"'{file_3.name}' okunamadı.")
+        st.stop()
 
-    with tab3:
-        st.subheader("Çağrı Sıfırlama (0 Puan) Kayıtları")
-        zero_df = f_df[f_df['Form Puan'] == 0][['Tarih', 'Personel', 'Takım Adı', 'Açıklama Detay']]
-        st.table(zero_df)
+    st.sidebar.success(
+        f"Yüklendi:\n- DATA: {file_data.name}\n- MMA: {file_mma.name}\n- 3. Dosya: {file_3.name}"
+    )
 
-    with tab4:
-        st.subheader("MMA (Müşteri Memnuniyeti) Özeti")
-        if not df_mma.empty:
-            mma_summary = df_mma['Anket Sonucu'].value_counts() if 'Anket Sonucu' in df_mma.columns else df_mma['Müşteri Temsilcisi Müşteriye Anket Sordu Mu?'].value_counts()
-            st.bar_chart(mma_summary)
-            st.dataframe(df_mma[['Müşteri Temsilcisi Adı', 'Anket Tarihi', 'Çağrı Konusu']].tail(10))
-
+    # Bundan sonra mevcut kodunda uploaded_file yerine df_data/df_mma kullanarak devam et
 else:
-    st.warning("Lütfen işlem yapmak için Excel dosyasını yükleyin.")
+    st.warning("Lütfen 3 Excel dosyasını aynı anda yükleyin.")
+    st.stop()
